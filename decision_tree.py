@@ -12,23 +12,14 @@ from binary_tree import *
 class DecisionTreeClassifier():
     # binary decision tree classifier
 
-    def __init__(self, D, class_labels, is_categorical=False, **kwargs):
-        # param: D(pd.DataFrame) is a data set. class_labels(pd.DataFrame) is a class label(y) for each point xj in D
-        # param: is_categorical(Bool) true if D based on categorical attributes
-        # Merge D and class_labels. The last column of data_set will contain the class labels for each data point
-        if D.shape[0] != class_labels.shape[0]:
-            raise IndexError("Data and Class Label must have the same number of rows")
-        data_set = D.copy()
-        #print(class_labels.iloc[:,0])
-        data_set.insert(loc=len(data_set.columns), column='classes', value=class_labels.iloc[:,0])
-        self.data_set = data_set  # class labels of each data point inserted in the last column
-        self.is_categorical = is_categorical
+    def __init__(self, class_labels, **kwargs):
+        # param: class_labels(pd.Series) is a class label(y) for each point xj in D
         self.class_domain = list(set(class_labels.iloc[:, 0]))
         self.decision_tree = BinaryTree()
         self.is_trained = False
 
 
-    def calculate_entropy(self, nvi_lst):
+    def calculate_entropy(self, nvi_lst, **kwargs):
         # Compute shannon entropy of nvi_lst
         # param nvi_lst: list containing num of counts of attribute Xj <=v(split point) and xj=Class i in the data set
         # return an entropy value (float)
@@ -37,7 +28,9 @@ class DecisionTreeClassifier():
             entropy = 0
             for i in range(len(nvi_lst)):
                 prob_class_i_given_D = nvi_lst[i] / total_pts_counts
-                entropy += prob_class_i_given_D * log2(prob_class_i_given_D)
+                if prob_class_i_given_D != 0:
+                    # if prob == 0, then 0 * log(0) is assumed to be zero as multiplication by zero is zero
+                    entropy += prob_class_i_given_D * log2(prob_class_i_given_D)
         except ZeroDivisionError:
             # this happens when computing the entropy of data set with no data point
             # In this case, I assumed the entropy would be zero as it shouldn't affect the result of the algorithm
@@ -45,7 +38,7 @@ class DecisionTreeClassifier():
         return entropy * -1
 
 
-    def get_info_gain(self, nvi_lst, nci_lst):
+    def get_info_gain(self, nvi_lst, nci_lst, **kwargs):
         # Compute information gain of dataset with the given split
         # param nvi_lst: list containing num of counts of attribute Xj <=v(split point) and xj=Class i in the data set
         # param nci_lst: list containing num of counts of xj=Class i in the data set(can be splitted data set)
@@ -61,11 +54,12 @@ class DecisionTreeClassifier():
         return info_gain
 
 
-    def search_optimal_numeric_split_point(self, attr_index):
+    def search_optimal_numeric_split_point(self, data_set, attr_index, **kwargs):
         # find the best split point for real value variable
+        # param: data_set(pd.DataFrame) is a data set without class labels. i.e. dataset with features
         # param attr_index(int): indicates the column index of attribute where we want to find the best split point
         # return: best split point(int) and information gain(float) of the split point
-        modified_D = self.data_set.loc[:, [self.data_set.columns[attr_index], 'classes']]
+        modified_D = data_set.loc[:, [data_set.columns[attr_index], 'classes']]
         Xj_attribute_class_lst = [[modified_D.iloc[i,0],modified_D.iloc[i,1]] for i in range(len(modified_D))]
         Xj_attribute_class_lst.sort(key=lambda x: x[0])  # 2d list. first column: attribute, second column: class
         midp_lst = []
@@ -95,11 +89,12 @@ class DecisionTreeClassifier():
         return optimal_split_point, best_score
 
 
-    def search_optimal_categorical_split_point(self, attr_index):
+    def search_optimal_categorical_split_point(self, data_set, attr_index, **kwargs):
         # find the best split point for categorical variable
+        # param: data_set(pd.DataFrame) is a data set without class labels. i.e. dataset with features
         # param attr_index(int): indicates the column index of attribute where we want to find the best split point
         # return: best split point(int) and information gain(float) of the split point
-        modified_D = self.data_set.loc[:, [self.data_set.columns[attr_index], 'classes']]
+        modified_D = data_set.loc[:, [data_set.columns[attr_index], 'classes']]
         Xj_attribute_class_lst = [[modified_D.iloc[i, 0], modified_D.iloc[i, 1]] for i in range(len(modified_D))]
         # list containing the counts of data points in class i for all classes in data set
         n_class_i_lst = [0] * len(self.class_domain)
@@ -152,16 +147,18 @@ class DecisionTreeClassifier():
         for col_j in range(D.shape[1] - 1):
             attr_type = str(D.iloc[:,col_j].dtype)
             if attr_type[:3] in ('int', 'flo'):  # numeric variable
-                split_pt, score = self.search_optimal_numeric_split_point(col_j)
+                split_pt, score = self.search_optimal_numeric_split_point(D, col_j)
             else:
-                split_pt, score = self.search_optimal_categorical_split_point(col_j)
+                split_pt, score = self.search_optimal_categorical_split_point(D, col_j)
             if max_score < score and ((split_pt, col_j) != parent_split_pt):
                 best_split_pt = (split_pt, col_j)
                 max_score = score
                 its_attr_type = attr_type
         quot = "'" if type(best_split_pt[0]) == str else ""
-        yes_expr = "==" if self.is_categorical else "<="
-        no_expr = "!=" if self.is_categorical else ">"
+        # if categorical feature, then yes on split rule is == operation
+        # if numeric, then yes on split rule is <= operation
+        yes_expr = "<=" if its_attr_type[:3] in ('int', 'flo') else "=="
+        no_expr = ">" if its_attr_type[:3] in ('int', 'flo') else "!="
         query1 = f"{D.columns[best_split_pt[1]]} {yes_expr} {quot}{best_split_pt[0]}{quot}"
         query2 = f"{D.columns[best_split_pt[1]]} {no_expr} {quot}{best_split_pt[0]}{quot}"
         D_Y = D.query(query1)
@@ -174,16 +171,23 @@ class DecisionTreeClassifier():
         return node
 
 
-    def train(self, purity_threshold, num_pts_threshold=0):
+    def train(self, data_set, class_labels, purity_threshold, num_pts_threshold=0, **kwargs):
+        # param: data_set(pd.DataFrame) is a data set without class labels. i.e. dataset with features
+        # param: class_labels(pd.Series) is a class label(y) for each point xj in D
         # param: purity_threshold indicates that if max purity of D <= this threshold, then leaf node created
         # param: num_pts_threshold(int, default=0) indicates that if |D| is >= this threshold, then leaf node created
-        # return list containing split points in the order of Depth-First
-        self.paritioning_regions(self.data_set, purity_threshold, num_pts_threshold)
+        # return BinaryTree containing split points in the order of Depth-First
+        if data_set.shape[0] != class_labels.shape[0]:
+            raise IndexError("Data and Class Label must have the same number of rows")
+        data_set = data_set.copy()
+        # class labels of each data point inserted in the last column
+        data_set.insert(loc=len(data_set.columns), column='classes', value=class_labels.iloc[:, 0])
+        self.paritioning_regions(data_set, purity_threshold, num_pts_threshold)
         self.is_trained = True
         return self.decision_tree
 
 
-    def predict(self, x):
+    def predict(self, x, **kwargs):
         # predict x's class with the trained decision tree classifier
         # param x: a data point (1D array/vector-like)
         # return predicted class of x (str)
@@ -193,7 +197,6 @@ class DecisionTreeClassifier():
                 return curr_node.node[0]  # return the predicted class
             attr_type = curr_node.data_info['dtype']
             if attr_type[:3] in ('int', 'flo'):  # numeric variable
-                print(f"child: {curr_node.left_child}, {curr_node.right_child}")
                 if x[curr_node.node[1]] <= curr_node.node[0]:  # yes to split point (left)
                     curr_node = curr_node.left_child
                 else:  # no to split point (right)
@@ -209,14 +212,15 @@ class DecisionTreeClassifier():
 
 
 if __name__ == '__main__':
+    # Create a dataset
     price = [10., 10., 20., 10., 10., 10., 20., 20.]
     chef = ['A', 'A', 'A', 'B', 'B', 'B', 'B', 'B']
     class_quality = ['L', 'L', 'H', 'H', 'H', 'H', 'L', 'H']
     D = pd.DataFrame({'Price': price, 'Chef': chef})
     class_labels = pd.DataFrame({'Quality': class_quality})
-
-    DTC = DecisionTreeClassifier(D, class_labels, is_categorical=True)
-    DTC.train(purity_threshold=0.75)
+    # instantiate decision tree classifier
+    DTC = DecisionTreeClassifier(class_labels)
+    DTC.train(D, class_labels, purity_threshold=0.75)
     if DTC.is_trained:
         DTC.decision_tree.BFS_traverse(edge_labels=('Yes', 'No'))
     else:
